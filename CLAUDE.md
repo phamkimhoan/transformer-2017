@@ -18,10 +18,10 @@ Spacy models are downloaded automatically by `load_tokenizers()` on first run.
 ## Running
 
 ```bash
-python train.py                          # train with TrainConfig defaults
-python train.py --num-epochs 10          # override any field via CLI
-python train.py --mode eval --resume-from small_transformer_multi30k_de_en_
-python train.py --help                   # list all flags
+python run.py                          # train with TrainConfig defaults
+python run.py --num-epochs 10          # override any field via CLI
+python run.py --mode eval --resume-from small_transformer_multi30k_de_en_
+python run.py --help                   # list all flags
 ```
 
 `TrainConfig` in `config.py` holds the defaults; CLI args override only what is explicitly passed. All `TrainConfig` fields are exposed as `--kebab-case` flags.
@@ -54,7 +54,7 @@ Four files comprise the entire codebase:
 - `find_checkpoint(path)` — accepts exact path or prefix; globs for `{prefix}epoch*.pt` and returns the latest
 - `greedy_decode(model, src, src_mask, max_len, start_symbol)` — token-by-token greedy inference
 
-**`train.py`** — Entry point:
+**`run.py`** — Entry point:
 - `parse_args()` — builds argparse from `TrainConfig` defaults; every field is a `--kebab-case` flag
 - `train_model` / `train_worker` — handles device setup (CUDA/MPS/CPU), DDP for multi-GPU CUDA, checkpoint resume, epoch loop
 - `eval_model` — loads checkpoint, runs greedy decode on test set, reports sacrebleu BLEU score
@@ -74,5 +74,5 @@ Four files comprise the entire codebase:
 - **Explicit parameters with defaults**: functions never read config constants directly from the module scope inside their body. All config dependencies are explicit parameters with the constant as the default value (e.g. `def load_vocab(..., max_vocab=MAX_VOCABULARY_SIZE)`).
 - **`@dataclass` for all data containers**: plain classes with class-level annotations are forbidden — they cause shared state across instances. Every data container uses `@dataclass`.
 - **Subprocesses**: always `subprocess.run([sys.executable, ...], check=True)`, never `os.system`.
-- **Logging vs print**: use `logging.info` inside library/model code; `print` is acceptable only in `train.py`.
+- **Logging vs print**: use `logging.info` inside library/model code; `print` is acceptable only in `run.py`.
 - **Package management**: use `uv pip install`, not `pip install`.

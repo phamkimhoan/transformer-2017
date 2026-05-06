@@ -12,19 +12,19 @@ uv pip install -r requirements.txt
 
 ```bash
 # Train with defaults
-python train.py
+python run.py
 
 # Override hyperparameters from the CLI
-python train.py --num-epochs 10 --batch-size 64 --label-smoothing 0.0
+python run.py --num-epochs 10 --batch-size 64 --label-smoothing 0.0
 
 # Resume from latest checkpoint (glob-matched by prefix)
-python train.py --resume-from small_transformer_multi30k_de_en_
+python run.py --resume-from small_transformer_multi30k_de_en_
 
 # Evaluate BLEU on the test set
-python train.py --mode eval --resume-from small_transformer_multi30k_de_en_
+python run.py --mode eval --resume-from small_transformer_multi30k_de_en_
 
 # Show all options
-python train.py --help
+python run.py --help
 ```
 
 Defaults come from `TrainConfig` in `config.py`. Any field not passed on the CLI falls back to those defaults. Training resumes automatically when `--resume-from` is set to the checkpoint prefix — the latest `epoch*.pt` file is picked up automatically.
@@ -44,4 +44,4 @@ A small Transformer (2 layers, d_model=256, 4 heads) trained end-to-end with:
 | `config.py` | Hyperparameters and `TrainConfig` dataclass |
 | `model.py` | Transformer encoder-decoder architecture |
 | `utils.py` | Data pipeline, training loop, checkpointing |
-| `train.py` | Entry point: train and eval modes |
+| `run.py` | Entry point: train and eval modes |
