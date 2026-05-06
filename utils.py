@@ -1,4 +1,7 @@
 import collections
+import subprocess
+import sys
+from dataclasses import dataclass
 from model import subsequent_mask
 import time
 import torch.nn as nn
@@ -8,12 +11,12 @@ import os
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.functional import pad
+from tqdm import tqdm
 
 from datasets import load_dataset as hf_load_dataset
 
 from config import (
     DATASET_NAME,
-    DATASET_LANGUAGE_PAIR,
     SRC_LANGUAGE,
     TGT_LANGUAGE,
     MAX_VOCABULARY_SIZE,
@@ -100,13 +103,13 @@ class Batch:
         return tgt_mask
 
 
+@dataclass
 class TrainState:
     """Track number of steps, examples, and tokens processed"""
-
-    step: int = 0  # Steps in the current epoch
-    accum_step: int = 0  # Number of gradient accumulation steps
-    samples: int = 0  # total # of examples used
-    tokens: int = 0  # total # of tokens processed
+    step: int = 0
+    accum_step: int = 0
+    samples: int = 0
+    tokens: int = 0
 
 
 class LabelSmoothing(nn.Module):
@@ -123,8 +126,8 @@ class LabelSmoothing(nn.Module):
 
     def forward(self, x, target):
         assert x.size(1) == self.size
-        true_dist = x.data.clone()
-        true_dist.fill_(self.smoothing / (self.size - 2))
+        true_dist = x.detach().clone()
+        true_dist.fill_(self.smoothing / (self.size - 4))
         true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
         true_dist[:, self.padding_idx] = 0
         mask = torch.nonzero(target.data == self.padding_idx)
@@ -134,16 +137,12 @@ class LabelSmoothing(nn.Module):
         return self.criterion(x, true_dist.clone().detach())
 
 
-class DummyOptimizer(torch.optim.Optimizer):
-    def __init__(self):
-        self.param_groups = [{"lr": 0}]
-        self.state = {}
+class DummyOptimizer:
+    param_groups = [{"lr": 0}]
 
-    def step(self):
-        pass
+    def step(self): pass
 
-    def zero_grad(self, set_to_none=False):
-        pass
+    def zero_grad(self, set_to_none=False): pass
 
 
 class DummyScheduler:
@@ -175,24 +174,30 @@ def run_epoch(
     scheduler,
     mode="train",
     accum_iter=1,
-    train_state=TrainState(),
+    train_state=None,
+    total=None,
+    desc="",
 ):
-    """Train a single epoch"""
-    start = time.time()
+    """Train or evaluate a single epoch."""
+    if train_state is None:
+        train_state = TrainState()
     total_tokens = 0
     total_loss = 0
     tokens = 0
     n_accum = 0
-    for i, batch in enumerate(data_iter):
+    start = time.time()
+
+    bar = tqdm(data_iter, total=total, desc=desc, dynamic_ncols=True, leave=True)
+    for i, batch in enumerate(bar):
         out = model.forward(batch.src, batch.tgt, batch.src_mask, batch.tgt_mask)
         loss, loss_node = loss_compute(out, batch.tgt_y, batch.ntokens)
-        # loss_node = loss_node / accum_iter
         if mode == "train" or mode == "train+log":
+            loss_node = loss_node / accum_iter
             loss_node.backward()
             train_state.step += 1
             train_state.samples += batch.src.shape[0]
             train_state.tokens += batch.ntokens
-            if i % accum_iter == 0:
+            if (i + 1) % accum_iter == 0:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 n_accum += 1
@@ -202,20 +207,19 @@ def run_epoch(
         total_loss += loss
         total_tokens += batch.ntokens
         tokens += batch.ntokens
-        if i % 40 == 1 and (mode == "train" or mode == "train+log"):
-            lr = optimizer.param_groups[0]["lr"]
-            elapsed = time.time() - start
-            print(
-                (
-                    "Epoch Step: %6d | Accumulation Step: %3d | Loss: %6.2f "
-                    + "| Tokens / Sec: %7.1f | Learning Rate: %6.1e"
-                )
-                % (i, n_accum, loss / batch.ntokens, tokens / elapsed, lr)
-            )
-            start = time.time()
-            tokens = 0
+
+        elapsed = time.time() - start
+        tok_per_sec = float(tokens) / elapsed if elapsed > 0 else 0.0
+        lr = optimizer.param_groups[0]["lr"]
+        bar.set_postfix(
+            loss=f"{float(loss) / float(batch.ntokens):.3f}",
+            lr=f"{lr:.2e}",
+            tok_s=f"{tok_per_sec:.0f}",
+        )
+
         del loss
         del loss_node
+
     return total_loss / total_tokens, train_state
 
 
@@ -235,27 +239,26 @@ def rate(step, model_size, factor, warmup):
 # downloaded already
 
 
-def load_tokenizers():
-
+def load_tokenizers(src_lang=SRC_LANGUAGE, tgt_lang=TGT_LANGUAGE):
     spacy_models = {
         "de": "de_core_news_sm",
         "en": "en_core_web_sm",
         "fr": "fr_core_news_sm",
     }
 
-    src_model = spacy_models.get(SRC_LANGUAGE, f"{SRC_LANGUAGE}_core_web_sm")
-    tgt_model = spacy_models.get(TGT_LANGUAGE, f"{TGT_LANGUAGE}_core_web_sm")
+    src_model = spacy_models.get(src_lang, f"{src_lang}_core_web_sm")
+    tgt_model = spacy_models.get(tgt_lang, f"{tgt_lang}_core_web_sm")
 
     try:
         spacy_src = spacy.load(src_model)
     except IOError:
-        os.system(f"python -m spacy download {src_model}")
+        subprocess.run([sys.executable, "-m", "spacy", "download", src_model], check=True)
         spacy_src = spacy.load(src_model)
 
     try:
         spacy_tgt = spacy.load(tgt_model)
     except IOError:
-        os.system(f"python -m spacy download {tgt_model}")
+        subprocess.run([sys.executable, "-m", "spacy", "download", tgt_model], check=True)
         spacy_tgt = spacy.load(tgt_model)
 
     return spacy_src, spacy_tgt
@@ -272,61 +275,81 @@ def yield_tokens(data_iter, tokenizer, index):
 
 # Replaces torchtext.datasets.DATASET_NAME — returns (train, validation, test)
 # each as a list of (SRC_LANGUAGE_text, TGT_LANGUAGE_text) tuples
-def load_dataset():
-    ds = hf_load_dataset(DATASET_NAME, DATASET_LANGUAGE_PAIR)
+def load_dataset(
+    dataset_name=DATASET_NAME,
+    src_lang=SRC_LANGUAGE,
+    tgt_lang=TGT_LANGUAGE,
+):
+    ds = hf_load_dataset(dataset_name)
 
     def to_pairs(split):
         return [
-            (row["translation"][SRC_LANGUAGE], row["translation"][TGT_LANGUAGE])
+            (row[src_lang], row[tgt_lang])
             for row in ds[split]
         ]
 
     return to_pairs("train"), to_pairs("validation"), to_pairs("test")
 
 
-def build_vocabulary(spacy_src, spacy_tgt):
-    def tokenize_src(text):
-        return tokenize(text, spacy_src)
-
-    def tokenize_tgt(text):
-        return tokenize(text, spacy_tgt)
-
-    print(
-        f"Building shared {SRC_LANGUAGE.upper()}+{TGT_LANGUAGE.upper()} Vocabulary ..."
-    )
-    train, val, test = load_dataset()
-    all_pairs = train + val + test
+def build_vocabulary(
+    spacy_src,
+    spacy_tgt,
+    src_lang=SRC_LANGUAGE,
+    tgt_lang=TGT_LANGUAGE,
+    max_vocab=MAX_VOCABULARY_SIZE,
+    min_freq=MIN_VOCAB_FREQ,
+):
+    print(f"Building shared {src_lang.upper()}+{tgt_lang.upper()} Vocabulary ...")
+    train, val, _ = load_dataset(src_lang=src_lang, tgt_lang=tgt_lang, dataset_name=DATASET_NAME)
+    all_pairs = train + val
 
     def yield_all_tokens(data):
-        yield from yield_tokens(data, tokenize_src, index=0)
-        yield from yield_tokens(data, tokenize_tgt, index=1)
+        yield from yield_tokens(data, lambda t: tokenize(t, spacy_src), index=0)
+        yield from yield_tokens(data, lambda t: tokenize(t, spacy_tgt), index=1)
 
     vocab = build_vocab_from_iterator(
         yield_all_tokens(all_pairs),
-        min_freq=MIN_VOCAB_FREQ,
+        min_freq=min_freq,
         specials=["<s>", "</s>", "<blank>", "<unk>"],
-        max_tokens=MAX_VOCABULARY_SIZE,
+        max_tokens=max_vocab,
     )
     vocab.set_default_index(vocab["<unk>"])
-    return vocab, vocab
+    return vocab
 
 
-def load_vocab(spacy_src, spacy_tgt, directory=None):
+def load_vocab(
+    spacy_src,
+    spacy_tgt,
+    directory=None,
+    src_lang=SRC_LANGUAGE,
+    tgt_lang=TGT_LANGUAGE,
+    max_vocab=MAX_VOCABULARY_SIZE,
+    min_freq=MIN_VOCAB_FREQ,
+    dataset=DATASET_NAME,
+):
     if directory is None:
         directory = os.path.dirname(os.path.abspath(__file__))
     vocab_path = os.path.join(directory, "vocab.pt")
+    current_config = {
+        "src": src_lang, "tgt": tgt_lang,
+        "max_vocab": max_vocab, "min_freq": min_freq, "dataset": dataset,
+    }
 
     if os.path.exists(vocab_path):
-        print(f"Loading vocab from {vocab_path}")
-        vocab_src, vocab_tgt = torch.load(vocab_path)
-    else:
-        print("No vocab.pt found — building from scratch (this may take a while)...")
-        vocab_src, vocab_tgt = build_vocabulary(spacy_src, spacy_tgt)
-        torch.save((vocab_src, vocab_tgt), vocab_path)
-        print(f"Saved vocab to {vocab_path}")
+        saved = torch.load(vocab_path, weights_only=False)
+        if saved.get("config") != current_config:
+            print("Vocab config changed — rebuilding...")
+            os.remove(vocab_path)
+        else:
+            vocab = _Vocab(saved["stoi"], saved["itos"])
+            print(f"Loaded vocab from {vocab_path}\nVocabulary size: {len(vocab)}")
+            return vocab, vocab
 
-    print(f"Finished.\nVocabulary size: {len(vocab_src)}")
-    return vocab_src, vocab_tgt
+    print("No vocab.pt found — building from scratch (this may take a while)...")
+    vocab = build_vocabulary(spacy_src, spacy_tgt, src_lang, tgt_lang, max_vocab, min_freq)
+    torch.save({"stoi": vocab.get_stoi(), "itos": vocab.get_itos(), "config": current_config}, vocab_path)
+    print(f"Saved vocab to {vocab_path}\nVocabulary size: {len(vocab)}")
+    return vocab, vocab
 
 
 def collate_batch(
@@ -367,24 +390,10 @@ def collate_batch(
             ],
             0,
         )
-        src_list.append(
-            # warning - overwrites values for negative values of padding - len
-            pad(
-                processed_src,
-                (
-                    0,
-                    max_padding - len(processed_src),
-                ),
-                value=pad_id,
-            )
-        )
-        tgt_list.append(
-            pad(
-                processed_tgt,
-                (0, max_padding - len(processed_tgt)),
-                value=pad_id,
-            )
-        )
+        processed_src = processed_src[:max_padding]
+        processed_tgt = processed_tgt[:max_padding]
+        src_list.append(pad(processed_src, (0, max_padding - len(processed_src)), value=pad_id))
+        tgt_list.append(pad(processed_tgt, (0, max_padding - len(processed_tgt)), value=pad_id))
 
     src = torch.stack(src_list)
     tgt = torch.stack(tgt_list)
@@ -401,7 +410,6 @@ def create_dataloaders(
     max_padding=128,
     is_distributed=True,
 ):
-    # def create_dataloaders(batch_size=12000):
     def tokenize_src(text):
         return tokenize(text, spacy_src)
 
@@ -446,25 +454,28 @@ def create_dataloaders(
     return train_dataloader, valid_dataloader
 
 
-def find_checkpoint(directory=None, prefix="model_"):
-    if directory is None:
-        directory = os.path.dirname(os.path.abspath(__file__))
-    matches = [
-        f for f in os.listdir(directory) if f.startswith(prefix) and f.endswith(".pt")
-    ]
-    if not matches:
-        print(f"No checkpoint found in {directory}")
+def find_checkpoint(path):
+    if path is None:
         return None
-    path = max(matches, key=lambda f: os.path.getmtime(os.path.join(directory, f)))
-    path = os.path.join(directory, path)
-    print(f"Found checkpoint: {path}")
-    return path
+    if os.path.exists(path):
+        print(f'Loading checkpoint: {path}')
+        return path
+    # treat as prefix glob: find latest epoch file matching <path>epoch*.pt
+    import glob
+    matches = sorted(glob.glob(f"{path}epoch*.pt"))
+    if matches:
+        latest = matches[-1]
+        print(f'Loading checkpoint: {latest}')
+        return latest
+    print(f'Checkpoint not found: {path}')
+    return None
 
 
 def save_checkpoint(ckpt_dict, directory=None, prefix="model_"):
     if directory is None:
         directory = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(directory, f"{prefix}checkpoint.pt")
+    epoch = ckpt_dict.get("epoch", 0)
+    path = os.path.join(directory, f"{prefix}epoch{epoch:03d}.pt")
     torch.save(ckpt_dict, path)
     size_mb = os.path.getsize(path) / 1_000_000
     print(f"Checkpoint saved: {path}  ({size_mb:.1f} MB)")
@@ -473,15 +484,15 @@ def save_checkpoint(ckpt_dict, directory=None, prefix="model_"):
 
 def greedy_decode(model, src, src_mask, max_len, start_symbol):
     memory = model.encode(src, src_mask)
-    ys = torch.zeros(1, 1).fill_(start_symbol).type_as(src.data)
+    ys = torch.full((1, 1), start_symbol, dtype=src.dtype, device=src.device)
     for i in range(max_len - 1):
         out = model.decode(
-            memory, src_mask, ys, subsequent_mask(ys.size(1)).type_as(src.data)
+            memory, src_mask, ys, subsequent_mask(ys.size(1)).to(src.device)
         )
         prob = model.generator(out[:, -1])
         _, next_word = torch.max(prob, dim=1)
-        next_word = next_word.data[0]
+        next_word = next_word.item()
         ys = torch.cat(
-            [ys, torch.zeros(1, 1).type_as(src.data).fill_(next_word)], dim=1
+            [ys, torch.full((1, 1), next_word, dtype=src.dtype, device=src.device)], dim=1
         )
     return ys

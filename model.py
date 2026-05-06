@@ -1,8 +1,11 @@
+import logging
 import torch
 import torch.nn as nn
 from torch.nn.functional import log_softmax
 import copy
 import math
+
+from config import NUMBER_OF_LAYERS, DIM_MODEL, DIM_FEEDFORWARD, NUMBER_OF_ATTENTION_HEAD, DROP_OUT
 
 
 class EncoderDecoder(nn.Module):
@@ -57,7 +60,7 @@ class LayerNorm(nn.Module):
 
     def forward(self, x):
         mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
+        std = x.std(-1, keepdim=True, unbiased=False)
         return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
 
@@ -144,10 +147,7 @@ class DecoderLayer(nn.Module):
 def subsequent_mask(size):
     "Mask out subsequent positions."
     attn_shape = (1, size, size)
-    subsequent_mask = torch.triu(torch.ones(attn_shape), diagonal=1).type(
-        torch.uint8
-    )
-    return subsequent_mask == 0
+    return torch.triu(torch.ones(attn_shape, dtype=torch.bool), diagonal=1) == False
 
 
 def attention(query, key, value, mask=None, dropout=None):
@@ -155,7 +155,7 @@ def attention(query, key, value, mask=None, dropout=None):
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
+        scores = scores.masked_fill(mask == 0, float("-inf"))
     p_attn = scores.softmax(dim=-1)
     if dropout is not None:
         p_attn = dropout(p_attn)
@@ -167,17 +167,14 @@ class MultiHeadedAttention(nn.Module):
         "Take in model size and number of heads."
         super(MultiHeadedAttention, self).__init__()
         assert d_model % h == 0
-        # We assume d_v always equals d_k
         self.d_k = d_model // h
         self.h = h
         self.linears = clones(nn.Linear(d_model, d_model), 4)
-        self.attn = None
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, query, key, value, mask=None):
         "Implements Figure 2"
         if mask is not None:
-            # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
         nbatches = query.size(0)
 
@@ -188,9 +185,7 @@ class MultiHeadedAttention(nn.Module):
         ]
 
         # 2) Apply attention on all the projected vectors in batch.
-        x, self.attn = attention(
-            query, key, value, mask=mask, dropout=self.dropout
-        )
+        x, _ = attention(query, key, value, mask=mask, dropout=self.dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = (
@@ -198,9 +193,6 @@ class MultiHeadedAttention(nn.Module):
             .contiguous()
             .view(nbatches, -1, self.h * self.d_k)
         )
-        del query
-        del key
-        del value
         return self.linears[-1](x)
 
 
@@ -234,7 +226,6 @@ class PositionalEncoding(nn.Module):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
-        # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1)
         div_term = torch.exp(
@@ -246,13 +237,18 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, x):
-        x = x + self.pe[:, : x.size(1)].requires_grad_(False)
+        x = x + self.pe[:, : x.size(1)]
         return self.dropout(x)
 
 
 def make_model(
-    src_vocab, tgt_vocab, N, d_model,
-    d_ff, h, dropout
+    src_vocab,
+    tgt_vocab,
+    N=NUMBER_OF_LAYERS,
+    d_model=DIM_MODEL,
+    d_ff=DIM_FEEDFORWARD,
+    h=NUMBER_OF_ATTENTION_HEAD,
+    dropout=DROP_OUT,
 ):
     "Helper: Construct a model from hyperparameters."
     c = copy.deepcopy
@@ -267,11 +263,9 @@ def make_model(
         Generator(d_model, tgt_vocab),
     )
 
-    # This was important from their code.
-    # Initialize parameters with Glorot / fan_avg.
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameter count: {total_params:,}")
+    logging.info(f"Model parameter count: {total_params:,}")
     return model
