@@ -29,3 +29,4 @@ class TrainConfig:
     resume_from: Optional[str] = "small_transformer_multi30k_de_en_"
     distributed: bool = False
     mode: Literal["train", "eval"] = "train"
+    label_smoothing: float = 0.1

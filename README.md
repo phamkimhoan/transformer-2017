@@ -10,17 +10,24 @@ uv pip install -r requirements.txt
 
 ## Usage
 
-Edit `TrainConfig` in `config.py`, then:
-
 ```bash
-# Train
+# Train with defaults
 python train.py
 
-# Evaluate BLEU on test set (set mode="eval" and resume_from in TrainConfig)
-python train.py
+# Override hyperparameters from the CLI
+python train.py --num-epochs 10 --batch-size 64 --label-smoothing 0.0
+
+# Resume from latest checkpoint (glob-matched by prefix)
+python train.py --resume-from small_transformer_multi30k_de_en_
+
+# Evaluate BLEU on the test set
+python train.py --mode eval --resume-from small_transformer_multi30k_de_en_
+
+# Show all options
+python train.py --help
 ```
 
-Training resumes automatically from the latest checkpoint when `resume_from` is set to the file prefix (e.g. `"small_transformer_multi30k_de_en_"`).
+Defaults come from `TrainConfig` in `config.py`. Any field not passed on the CLI falls back to those defaults. Training resumes automatically when `--resume-from` is set to the checkpoint prefix — the latest `epoch*.pt` file is picked up automatically.
 
 ## Model
 

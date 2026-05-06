@@ -18,15 +18,13 @@ Spacy models are downloaded automatically by `load_tokenizers()` on first run.
 ## Running
 
 ```bash
-# Train (resumes from latest checkpoint if resume_from is set in TrainConfig)
-python train.py
-
-# Evaluate BLEU on test set
-# Set mode="eval" in TrainConfig, then:
-python train.py
+python train.py                          # train with TrainConfig defaults
+python train.py --num-epochs 10          # override any field via CLI
+python train.py --mode eval --resume-from small_transformer_multi30k_de_en_
+python train.py --help                   # list all flags
 ```
 
-All training configuration lives in `TrainConfig` in `config.py` — edit it directly before running.
+`TrainConfig` in `config.py` holds the defaults; CLI args override only what is explicitly passed. All `TrainConfig` fields are exposed as `--kebab-case` flags.
 
 ## Architecture
 
@@ -57,9 +55,10 @@ Four files comprise the entire codebase:
 - `greedy_decode(model, src, src_mask, max_len, start_symbol)` — token-by-token greedy inference
 
 **`train.py`** — Entry point:
+- `parse_args()` — builds argparse from `TrainConfig` defaults; every field is a `--kebab-case` flag
 - `train_model` / `train_worker` — handles device setup (CUDA/MPS/CPU), DDP for multi-GPU CUDA, checkpoint resume, epoch loop
 - `eval_model` — loads checkpoint, runs greedy decode on test set, reports sacrebleu BLEU score
-- `__main__` dispatches on `config.mode` (`"train"` or `"eval"`)
+- `__main__` calls `parse_args()` then dispatches on `config.mode`
 
 ## Key Design Decisions
 

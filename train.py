@@ -1,3 +1,4 @@
+import argparse
 import os
 import torch
 import torch.distributed as dist
@@ -81,7 +82,7 @@ def train_worker(
         is_main_process = gpu == 0
 
     criterion = LabelSmoothing(
-        size=len(vocab_tgt), padding_idx=pad_idx, smoothing=0.1
+        size=len(vocab_tgt), padding_idx=pad_idx, smoothing=config.label_smoothing
     )
     criterion.to(device)
 
@@ -246,8 +247,43 @@ def eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
     return result.score
 
 
+def parse_args() -> TrainConfig:
+    defaults = TrainConfig()
+    p = argparse.ArgumentParser(description="Train/eval the 2017 Transformer (de→en)")
+    p.add_argument("--batch-size",        type=int,   default=defaults.batch_size)
+    p.add_argument("--max-padding",       type=int,   default=defaults.max_padding)
+    p.add_argument("--base-lr",           type=float, default=defaults.base_lr)
+    p.add_argument("--warmup",            type=int,   default=defaults.warmup)
+    p.add_argument("--accum-iter",        type=int,   default=defaults.accum_iter)
+    p.add_argument("--num-epochs",        type=int,   default=defaults.num_epochs)
+    p.add_argument("--checkpoint-every",  type=int,   default=defaults.checkpoint_every)
+    p.add_argument("--file-prefix",       type=str,   default=defaults.file_prefix)
+    p.add_argument("--directory",         type=str,   default=defaults.directory)
+    p.add_argument("--resume-from",       type=str,   default=defaults.resume_from)
+    p.add_argument("--distributed",       action="store_true", default=defaults.distributed)
+    p.add_argument("--mode",              type=str,   default=defaults.mode,
+                   choices=["train", "eval"])
+    p.add_argument("--label-smoothing",   type=float, default=defaults.label_smoothing)
+    a = p.parse_args()
+    return TrainConfig(
+        batch_size=a.batch_size,
+        max_padding=a.max_padding,
+        base_lr=a.base_lr,
+        warmup=a.warmup,
+        accum_iter=a.accum_iter,
+        num_epochs=a.num_epochs,
+        checkpoint_every=a.checkpoint_every,
+        file_prefix=a.file_prefix,
+        directory=a.directory,
+        resume_from=a.resume_from,
+        distributed=a.distributed,
+        mode=a.mode,
+        label_smoothing=a.label_smoothing,
+    )
+
+
 if __name__ == "__main__":
-    config = TrainConfig()
+    config = parse_args()
     spacy_src, spacy_tgt = load_tokenizers()
     vocab_src, vocab_tgt = load_vocab(spacy_src, spacy_tgt, directory=config.directory)
     if config.mode == "train":
