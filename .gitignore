@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Training artifacts
+*.pt
+*.pth
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
