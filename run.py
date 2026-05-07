@@ -266,7 +266,7 @@ def parse_args() -> TrainConfig:
     p.add_argument("--checkpoint-every",  type=int,   default=defaults.checkpoint_every)
     p.add_argument("--file-prefix",       type=str,   default=defaults.file_prefix)
     p.add_argument("--directory",         type=str,   default=defaults.directory)
-    p.add_argument("--resume-from",       type=str,   default=defaults.resume_from)
+    p.add_argument("--resume-from",       type=str,   default=None)
     p.add_argument("--distributed",       action="store_true", default=defaults.distributed)
     p.add_argument("--mode",              type=str,   default=defaults.mode,
                    choices=["train", "eval"])
@@ -282,7 +282,7 @@ def parse_args() -> TrainConfig:
         checkpoint_every=a.checkpoint_every,
         file_prefix=a.file_prefix,
         directory=a.directory,
-        resume_from=a.resume_from,
+        resume_from=a.resume_from if a.resume_from is not None else a.file_prefix,
         distributed=a.distributed,
         mode=a.mode,
         label_smoothing=a.label_smoothing,

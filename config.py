@@ -26,7 +26,7 @@ class TrainConfig:
     checkpoint_every: int = 1
     file_prefix: str = "small_transformer_multi30k_de_en_"
     directory: Optional[str] = None
-    resume_from: Optional[str] = "small_transformer_multi30k_de_en_"
+    resume_from: Optional[str] = None
     distributed: bool = False
     mode: Literal["train", "eval"] = "train"
     label_smoothing: float = 0.1
