@@ -106,7 +106,7 @@ def train_worker(
 
     ckpt_path = find_checkpoint(config.resume_from)
     if ckpt_path:
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         module.load_state_dict(ckpt.get('model', ckpt))
         if 'epoch' in ckpt:
             start_epoch = ckpt['epoch'] + 1
@@ -188,7 +188,7 @@ def train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig)
 
     ckpt_path = find_checkpoint(config.resume_from)
     if ckpt_path:
-        ckpt = torch.load(ckpt_path, map_location='cpu')
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
         epoch = ckpt.get('epoch', '?')
         has_full = 'optimizer' in ckpt
         print(f'Resuming from epoch {epoch} ({"full" if has_full else "weights-only"} checkpoint) — '
