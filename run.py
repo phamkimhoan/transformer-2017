@@ -146,15 +146,16 @@ def train_worker(
         empty_cache(device_type)
 
         model.eval()
-        val_loss, _ = run_epoch(
-            (Batch(b[0], b[1], pad_idx) for b in valid_dataloader),
-            model,
-            SimpleLossCompute(module.generator, criterion),
-            DummyOptimizer(), DummyScheduler(),
-            mode='eval',
-            total=len(valid_dataloader),
-            desc=f'Epoch {epoch} val  ',
-        )
+        with torch.no_grad():
+            val_loss, _ = run_epoch(
+                (Batch(b[0], b[1], pad_idx) for b in valid_dataloader),
+                model,
+                SimpleLossCompute(module.generator, criterion),
+                DummyOptimizer(), DummyScheduler(),
+                mode='eval',
+                total=len(valid_dataloader),
+                desc=f'Epoch {epoch} val  ',
+            )
         print(f'Epoch {epoch} | train loss: {train_loss:.4f} | val loss: {val_loss:.4f}', flush=True)
         empty_cache(device_type)
 
@@ -238,7 +239,13 @@ def eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
             src = torch.tensor(src_tokens, dtype=torch.long, device=device).unsqueeze(0)
             src_mask = (src != blank_idx).unsqueeze(-2)
             out = greedy_decode(model, src, src_mask, max_len=config.max_padding, start_symbol=bos_idx)
-            tokens = [itos[i] for i in out[0].tolist() if i not in (bos_idx, eos_idx)]
+            tokens = []
+            for i in out[0].tolist():
+                if i == bos_idx:
+                    continue
+                if i == eos_idx:
+                    break
+                tokens.append(itos[i])
             hypotheses.append(" ".join(tokens))
             references.append(tgt_text)
 

@@ -127,12 +127,10 @@ class LabelSmoothing(nn.Module):
     def forward(self, x, target):
         assert x.size(1) == self.size
         true_dist = x.detach().clone()
-        true_dist.fill_(self.smoothing / (self.size - 4))
+        true_dist.fill_(self.smoothing / (self.size - 2))
         true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
         true_dist[:, self.padding_idx] = 0
-        mask = torch.nonzero(target.data == self.padding_idx)
-        if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        true_dist.masked_fill_((target == self.padding_idx).unsqueeze(1), 0.0)
         self.true_dist = true_dist
         return self.criterion(x, true_dist.clone().detach())
 
@@ -202,7 +200,7 @@ def run_epoch(
                 optimizer.zero_grad(set_to_none=True)
                 n_accum += 1
                 train_state.accum_step += 1
-            scheduler.step()
+                scheduler.step()
 
         total_loss += loss
         total_tokens += batch.ntokens
@@ -390,8 +388,12 @@ def collate_batch(
             ],
             0,
         )
-        processed_src = processed_src[:max_padding]
-        processed_tgt = processed_tgt[:max_padding]
+        if len(processed_src) > max_padding:
+            processed_src = processed_src[:max_padding]
+            processed_src[-1] = eos_id[0]
+        if len(processed_tgt) > max_padding:
+            processed_tgt = processed_tgt[:max_padding]
+            processed_tgt[-1] = eos_id[0]
         src_list.append(pad(processed_src, (0, max_padding - len(processed_src)), value=pad_id))
         tgt_list.append(pad(processed_tgt, (0, max_padding - len(processed_tgt)), value=pad_id))
 
