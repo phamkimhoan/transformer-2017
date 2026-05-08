@@ -17,6 +17,7 @@ from datasets import load_dataset as hf_load_dataset
 
 from config import (
     DATASET_NAME,
+    DATASET_CONFIG,
     SRC_LANGUAGE,
     TGT_LANGUAGE,
     MAX_VOCABULARY_SIZE,
@@ -284,14 +285,18 @@ def yield_tokens(data_iter, tokenizer, index):
 # each as a list of (SRC_LANGUAGE_text, TGT_LANGUAGE_text) tuples
 def load_dataset(
     dataset_name=DATASET_NAME,
+    dataset_config=DATASET_CONFIG,
     src_lang=SRC_LANGUAGE,
     tgt_lang=TGT_LANGUAGE,
 ):
-    ds = hf_load_dataset(dataset_name)
+    ds = hf_load_dataset(dataset_name, dataset_config) if dataset_config \
+        else hf_load_dataset(dataset_name)
 
     def to_pairs(split):
         return [
-            (row[src_lang], row[tgt_lang])
+            (row["translation"][src_lang], row["translation"][tgt_lang])
+            if "translation" in row
+            else (row[src_lang], row[tgt_lang])
             for row in ds[split]
         ]
 
@@ -305,9 +310,13 @@ def build_vocabulary(
     tgt_lang=TGT_LANGUAGE,
     max_vocab=MAX_VOCABULARY_SIZE,
     min_freq=MIN_VOCAB_FREQ,
+    dataset_config=DATASET_CONFIG,
 ):
     print(f"Building shared {src_lang.upper()}+{tgt_lang.upper()} Vocabulary ...")
-    train, val, _ = load_dataset(src_lang=src_lang, tgt_lang=tgt_lang, dataset_name=DATASET_NAME)
+    train, val, _ = load_dataset(
+        src_lang=src_lang, tgt_lang=tgt_lang,
+        dataset_name=DATASET_NAME, dataset_config=dataset_config,
+    )
     all_pairs = train + val
 
     def yield_all_tokens(data):
@@ -333,13 +342,15 @@ def load_vocab(
     max_vocab=MAX_VOCABULARY_SIZE,
     min_freq=MIN_VOCAB_FREQ,
     dataset=DATASET_NAME,
+    dataset_config=DATASET_CONFIG,
 ):
     if directory is None:
         directory = os.path.dirname(os.path.abspath(__file__))
     vocab_path = os.path.join(directory, "vocab.pt")
     current_config = {
         "src": src_lang, "tgt": tgt_lang,
-        "max_vocab": max_vocab, "min_freq": min_freq, "dataset": dataset,
+        "max_vocab": max_vocab, "min_freq": min_freq,
+        "dataset": dataset, "dataset_config": dataset_config,
     }
 
     if os.path.exists(vocab_path):
@@ -353,7 +364,7 @@ def load_vocab(
             return vocab, vocab
 
     print("No vocab.pt found — building from scratch (this may take a while)...")
-    vocab = build_vocabulary(spacy_src, spacy_tgt, src_lang, tgt_lang, max_vocab, min_freq)
+    vocab = build_vocabulary(spacy_src, spacy_tgt, src_lang, tgt_lang, max_vocab, min_freq, dataset_config)
     torch.save({"stoi": vocab.get_stoi(), "itos": vocab.get_itos(), "config": current_config}, vocab_path)
     print(f"Saved vocab to {vocab_path}\nVocabulary size: {len(vocab)}")
     return vocab, vocab

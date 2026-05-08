@@ -12,9 +12,11 @@ NUMBER_OF_LAYERS = 6
 DIM_MODEL = 512
 DIM_FEEDFORWARD = 2048
 NUMBER_OF_ATTENTION_HEAD = 8
+DROP_OUT = 0.1
 
 # DATASET_NAME = "bentrevett/multi30k"
 DATASET_NAME = "wmt14"
+DATASET_CONFIG = "de-en"   # 2nd arg to hf_load_dataset; None for multi30k
 SRC_LANGUAGE = "de"
 TGT_LANGUAGE = "en"
 
