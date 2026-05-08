@@ -319,12 +319,18 @@ def build_vocabulary(
     )
     all_pairs = train + val
 
-    def yield_all_tokens(data):
-        yield from yield_tokens(data, lambda t: tokenize(t, spacy_src), index=0)
-        yield from yield_tokens(data, lambda t: tokenize(t, spacy_tgt), index=1)
+    def tokenize_batch(nlp, texts, desc):
+        # pipe() batches texts internally — much faster than one-by-one
+        for doc in tqdm(nlp.tokenizer.pipe(texts, batch_size=4096),
+                        total=len(texts), desc=desc, dynamic_ncols=True):
+            yield [tok.text for tok in doc]
+
+    def yield_all_tokens():
+        yield from tokenize_batch(spacy_src, [p[0] for p in all_pairs], f"Tokenizing {src_lang}")
+        yield from tokenize_batch(spacy_tgt, [p[1] for p in all_pairs], f"Tokenizing {tgt_lang}")
 
     vocab = build_vocab_from_iterator(
-        yield_all_tokens(all_pairs),
+        yield_all_tokens(),
         min_freq=min_freq,
         specials=["<s>", "</s>", "<blank>", "<unk>"],
         max_tokens=max_vocab,
