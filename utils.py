@@ -445,8 +445,8 @@ def pretokenize_and_cache(
     bos    = vocab["<s>"]
     eos    = vocab["</s>"]
     pad_id = vocab["<blank>"]
-    src_model = spacy_src.meta["name"]
-    tgt_model = spacy_tgt.meta["name"]
+    src_model = f"{spacy_src.meta['lang']}_{spacy_src.meta['name']}"
+    tgt_model = f"{spacy_tgt.meta['lang']}_{spacy_tgt.meta['name']}"
 
     def encode_split(pairs, label):
         src_texts = [p[0] for p in pairs]
