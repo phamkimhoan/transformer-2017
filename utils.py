@@ -376,110 +376,121 @@ def load_vocab(
     return vocab, vocab
 
 
-def collate_batch(
-    batch,
-    src_pipeline,
-    tgt_pipeline,
-    src_vocab,
-    tgt_vocab,
-    device,
-    max_padding=128,
-    pad_id=2,
-):
-    bs_id = torch.tensor([0], device=device)  # <s> token id
-    eos_id = torch.tensor([1], device=device)  # </s> token id
-    src_list, tgt_list = [], []
-    for _src, _tgt in batch:
-        processed_src = torch.cat(
-            [
-                bs_id,
-                torch.tensor(
-                    src_vocab(src_pipeline(_src)),
-                    dtype=torch.int64,
-                    device=device,
-                ),
-                eos_id,
-            ],
-            0,
-        )
-        processed_tgt = torch.cat(
-            [
-                bs_id,
-                torch.tensor(
-                    tgt_vocab(tgt_pipeline(_tgt)),
-                    dtype=torch.int64,
-                    device=device,
-                ),
-                eos_id,
-            ],
-            0,
-        )
-        if len(processed_src) > max_padding:
-            processed_src = processed_src[:max_padding]
-            processed_src[-1] = eos_id[0]
-        if len(processed_tgt) > max_padding:
-            processed_tgt = processed_tgt[:max_padding]
-            processed_tgt[-1] = eos_id[0]
-        src_list.append(pad(processed_src, (0, max_padding - len(processed_src)), value=pad_id))
-        tgt_list.append(pad(processed_tgt, (0, max_padding - len(processed_tgt)), value=pad_id))
+class _PreTokenizedDataset(Dataset):
+    """Wraps pre-tokenized (src_ids, tgt_ids) pairs — no tokenization at batch time."""
+    def __init__(self, pairs):
+        self._pairs = pairs  # list of (src_list, tgt_list)
 
-    src = torch.stack(src_list)
-    tgt = torch.stack(tgt_list)
-    return (src, tgt)
+    def __len__(self):
+        return len(self._pairs)
+
+    def __getitem__(self, idx):
+        return self._pairs[idx]
+
+
+def pretokenize_and_cache(
+    vocab,
+    spacy_src,
+    spacy_tgt,
+    directory=None,
+    max_padding=128,
+    dataset_config=DATASET_CONFIG,
+):
+    """Tokenize train+val splits once and cache to disk as integer ID lists.
+
+    Subsequent calls load from cache instantly. Cache is invalidated when
+    vocab size or max_padding changes.
+    """
+    if directory is None:
+        directory = os.path.dirname(os.path.abspath(__file__))
+    cache_path = os.path.join(directory, "dataset_cache.pt")
+    fingerprint = {"vocab_size": len(vocab), "max_padding": max_padding,
+                   "dataset_config": dataset_config}
+
+    if os.path.exists(cache_path):
+        saved = torch.load(cache_path, weights_only=False)
+        if saved.get("fingerprint") == fingerprint:
+            print(f"Loaded pre-tokenized dataset from {cache_path}")
+            return saved["train"], saved["val"]
+        print("Dataset cache outdated — rebuilding...")
+        os.remove(cache_path)
+
+    print("Pre-tokenizing dataset (runs once, cached afterwards)...")
+    train_raw, val_raw, _ = load_dataset(dataset_config=dataset_config)
+
+    bos = vocab["<s>"]
+    eos = vocab["</s>"]
+    pad_id = vocab["<blank>"]
+
+    def encode_split(pairs, desc):
+        src_texts = [p[0] for p in pairs]
+        tgt_texts = [p[1] for p in pairs]
+        result = []
+        src_docs = list(tqdm(spacy_src.tokenizer.pipe(src_texts, batch_size=4096),
+                             total=len(src_texts), desc=f"{desc} src", dynamic_ncols=True))
+        tgt_docs = list(tqdm(spacy_tgt.tokenizer.pipe(tgt_texts, batch_size=4096),
+                             total=len(tgt_texts), desc=f"{desc} tgt", dynamic_ncols=True))
+        for src_doc, tgt_doc in zip(src_docs, tgt_docs):
+            src_ids = [bos] + vocab([t.text for t in src_doc]) + [eos]
+            tgt_ids = [bos] + vocab([t.text for t in tgt_doc]) + [eos]
+            if len(src_ids) > max_padding:
+                src_ids = src_ids[:max_padding - 1] + [eos]
+            if len(tgt_ids) > max_padding:
+                tgt_ids = tgt_ids[:max_padding - 1] + [eos]
+            result.append((src_ids, tgt_ids))
+        return result
+
+    train_pairs = encode_split(train_raw, "Train")
+    val_pairs   = encode_split(val_raw,   "Val  ")
+    torch.save({"train": train_pairs, "val": val_pairs, "fingerprint": fingerprint}, cache_path)
+    print(f"Saved pre-tokenized dataset to {cache_path}")
+    return train_pairs, val_pairs
 
 
 def create_dataloaders(
     device,
-    vocab_src,
-    vocab_tgt,
+    vocab,
     spacy_src,
     spacy_tgt,
-    batch_size=12000,
+    batch_size=32,
     max_padding=128,
-    is_distributed=True,
+    is_distributed=False,
+    directory=None,
+    dataset_config=DATASET_CONFIG,
 ):
-    def tokenize_src(text):
-        return tokenize(text, spacy_src)
+    train_pairs, val_pairs = pretokenize_and_cache(
+        vocab, spacy_src, spacy_tgt,
+        directory=directory, max_padding=max_padding, dataset_config=dataset_config,
+    )
 
-    def tokenize_tgt(text):
-        return tokenize(text, spacy_tgt)
+    pad_id = vocab["<blank>"]
 
     def collate_fn(batch):
-        return collate_batch(
-            batch,
-            tokenize_src,
-            tokenize_tgt,
-            vocab_src,
-            vocab_tgt,
-            device,
-            max_padding=max_padding,
-            pad_id=vocab_src.get_stoi()["<blank>"],
-        )
+        # Returns CPU tensors — caller moves to device. Required for num_workers > 0.
+        src_batch = torch.zeros(len(batch), max_padding, dtype=torch.long).fill_(pad_id)
+        tgt_batch = torch.zeros(len(batch), max_padding, dtype=torch.long).fill_(pad_id)
+        for i, (src_ids, tgt_ids) in enumerate(batch):
+            src_batch[i, :len(src_ids)] = torch.tensor(src_ids, dtype=torch.long)
+            tgt_batch[i, :len(tgt_ids)] = torch.tensor(tgt_ids, dtype=torch.long)
+        return src_batch, tgt_batch
 
-    train_iter, valid_iter, test_iter = load_dataset()
-
-    train_iter_map = to_map_style_dataset(
-        train_iter
-    )  # DistributedSampler needs a dataset len()
-    train_sampler = DistributedSampler(train_iter_map) if is_distributed else None
-    valid_iter_map = to_map_style_dataset(valid_iter)
-    valid_sampler = DistributedSampler(valid_iter_map) if is_distributed else None
+    is_cuda = device.type == "cuda"
+    train_ds = _PreTokenizedDataset(train_pairs)
+    val_ds   = _PreTokenizedDataset(val_pairs)
+    train_sampler = DistributedSampler(train_ds) if is_distributed else None
+    val_sampler   = DistributedSampler(val_ds)   if is_distributed else None
 
     train_dataloader = DataLoader(
-        train_iter_map,
-        batch_size=batch_size,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
-        collate_fn=collate_fn,
+        train_ds, batch_size=batch_size,
+        shuffle=(train_sampler is None), sampler=train_sampler,
+        collate_fn=collate_fn, num_workers=4, pin_memory=is_cuda,
     )
-    valid_dataloader = DataLoader(
-        valid_iter_map,
-        batch_size=batch_size,
-        shuffle=(valid_sampler is None),
-        sampler=valid_sampler,
-        collate_fn=collate_fn,
+    val_dataloader = DataLoader(
+        val_ds, batch_size=batch_size,
+        shuffle=False, sampler=val_sampler,
+        collate_fn=collate_fn, num_workers=4, pin_memory=is_cuda,
     )
-    return train_dataloader, valid_dataloader
+    return train_dataloader, val_dataloader
 
 
 def find_checkpoint(path):

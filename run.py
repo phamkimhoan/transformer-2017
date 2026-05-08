@@ -87,10 +87,11 @@ def train_worker(
     criterion.to(device)
 
     train_dataloader, valid_dataloader = create_dataloaders(
-        device, vocab_src, vocab_tgt, spacy_src, spacy_tgt,
+        device, vocab_src, spacy_src, spacy_tgt,
         batch_size=config.batch_size // ngpus_per_node,
         max_padding=config.max_padding,
         is_distributed=is_distributed and device_type == "cuda",
+        directory=config.directory,
     )
 
     optimizer = torch.optim.Adam(
@@ -130,7 +131,7 @@ def train_worker(
 
         model.train()
         train_loss, train_state = run_epoch(
-            (Batch(b[0], b[1], pad_idx) for b in train_dataloader),
+            (Batch(b[0].to(device), b[1].to(device), pad_idx) for b in train_dataloader),
             model,
             SimpleLossCompute(module.generator, criterion),
             optimizer, lr_scheduler,
@@ -148,7 +149,7 @@ def train_worker(
         model.eval()
         with torch.no_grad():
             val_loss, _ = run_epoch(
-                (Batch(b[0], b[1], pad_idx) for b in valid_dataloader),
+                (Batch(b[0].to(device), b[1].to(device), pad_idx) for b in valid_dataloader),
                 model,
                 SimpleLossCompute(module.generator, criterion),
                 DummyOptimizer(), DummyScheduler(),

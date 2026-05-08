@@ -26,7 +26,7 @@ MIN_VOCAB_FREQ = 2
 
 @dataclass
 class TrainConfig:
-    batch_size: int = 32
+    batch_size: int = 128
     max_padding: int = 128
     base_lr: float = 1.0
     warmup: int = 3000
