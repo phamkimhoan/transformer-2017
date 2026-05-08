@@ -456,13 +456,15 @@ def pretokenize_and_cache(
         n = len(pairs)
         src_t = torch.full((n, max_padding), pad_id, dtype=torch.int32)
         tgt_t = torch.full((n, max_padding), pad_id, dtype=torch.int32)
-        for i, (src_tokens, tgt_tokens) in enumerate(zip(src_token_lists, tgt_token_lists)):
+        print(f"{label} encode: converting {n:,} token lists to IDs...", flush=True)
+        for i, (src_tokens, tgt_tokens) in enumerate(
+            tqdm(zip(src_token_lists, tgt_token_lists), total=n,
+                 desc=f"{label} encode", dynamic_ncols=True, mininterval=2.0)
+        ):
             src_ids = [bos] + vocab(src_tokens) + [eos]
             tgt_ids = [bos] + vocab(tgt_tokens) + [eos]
-            if len(src_ids) > max_padding:
-                src_ids = src_ids[:max_padding - 1] + [eos]
-            if len(tgt_ids) > max_padding:
-                tgt_ids = tgt_ids[:max_padding - 1] + [eos]
+            src_ids = src_ids[:max_padding - 1] + [eos] if len(src_ids) > max_padding else src_ids
+            tgt_ids = tgt_ids[:max_padding - 1] + [eos] if len(tgt_ids) > max_padding else tgt_ids
             src_t[i, :len(src_ids)] = torch.tensor(src_ids, dtype=torch.int32)
             tgt_t[i, :len(tgt_ids)] = torch.tensor(tgt_ids, dtype=torch.int32)
         return src_t, tgt_t
@@ -477,6 +479,12 @@ def pretokenize_and_cache(
     size_gb = os.path.getsize(cache_path) / 1e9
     print(f"Saved pre-tokenized dataset to {cache_path}  ({size_gb:.1f} GB)")
     return (train_src, train_tgt), (val_src, val_tgt)
+
+
+def _collate_fn(batch):
+    src = torch.stack([s for s, _ in batch]).long()
+    tgt = torch.stack([t for _, t in batch]).long()
+    return src, tgt
 
 
 def create_dataloaders(
@@ -495,12 +503,6 @@ def create_dataloaders(
         directory=directory, max_padding=max_padding, dataset_config=dataset_config,
     )
 
-    # Tensors are already padded — collate just stacks rows and casts to long
-    def collate_fn(batch):
-        src = torch.stack([s for s, _ in batch]).long()
-        tgt = torch.stack([t for _, t in batch]).long()
-        return src, tgt
-
     is_cuda = device.type == "cuda"
     train_ds = _PreTokenizedDataset(train_src, train_tgt)
     val_ds   = _PreTokenizedDataset(val_src,   val_tgt)
@@ -510,12 +512,12 @@ def create_dataloaders(
     train_dataloader = DataLoader(
         train_ds, batch_size=batch_size,
         shuffle=(train_sampler is None), sampler=train_sampler,
-        collate_fn=collate_fn, num_workers=4, pin_memory=is_cuda,
+        collate_fn=_collate_fn, num_workers=4, pin_memory=is_cuda,
     )
     val_dataloader = DataLoader(
         val_ds, batch_size=batch_size,
         shuffle=False, sampler=val_sampler,
-        collate_fn=collate_fn, num_workers=4, pin_memory=is_cuda,
+        collate_fn=_collate_fn, num_workers=4, pin_memory=is_cuda,
     )
     return train_dataloader, val_dataloader
 
