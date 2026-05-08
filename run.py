@@ -101,6 +101,7 @@ def train_worker(
         optimizer=optimizer,
         lr_lambda=lambda step: rate(step, DIM_MODEL, factor=1, warmup=config.warmup),
     )
+    scaler = torch.cuda.amp.GradScaler() if device_type == "cuda" else None
     train_state = TrainState()
     start_epoch = 0
     loss_history = []
@@ -140,6 +141,7 @@ def train_worker(
             train_state=train_state,
             total=len(train_dataloader),
             desc=f'Epoch {epoch} train',
+            scaler=scaler,
         )
 
         if device_type == "cuda":

@@ -177,6 +177,7 @@ def run_epoch(
     train_state=None,
     total=None,
     desc="",
+    scaler=None,
 ):
     """Train or evaluate a single epoch."""
     if train_state is None:
@@ -189,16 +190,24 @@ def run_epoch(
 
     bar = tqdm(data_iter, total=total, desc=desc, dynamic_ncols=True, leave=True)
     for i, batch in enumerate(bar):
-        out = model.forward(batch.src, batch.tgt, batch.src_mask, batch.tgt_mask)
-        loss, loss_node = loss_compute(out, batch.tgt_y, batch.ntokens)
+        with torch.autocast("cuda", enabled=scaler is not None):
+            out = model.forward(batch.src, batch.tgt, batch.src_mask, batch.tgt_mask)
+            loss, loss_node = loss_compute(out, batch.tgt_y, batch.ntokens)
         if mode == "train" or mode == "train+log":
             loss_node = loss_node / accum_iter
-            loss_node.backward()
+            if scaler is not None:
+                scaler.scale(loss_node).backward()
+            else:
+                loss_node.backward()
             train_state.step += 1
             train_state.samples += batch.src.shape[0]
             train_state.tokens += batch.ntokens
             if (i + 1) % accum_iter == 0:
-                optimizer.step()
+                if scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 n_accum += 1
                 train_state.accum_step += 1
@@ -513,11 +522,13 @@ def create_dataloaders(
         train_ds, batch_size=batch_size,
         shuffle=(train_sampler is None), sampler=train_sampler,
         collate_fn=_collate_fn, num_workers=4, pin_memory=is_cuda,
+        persistent_workers=True,
     )
     val_dataloader = DataLoader(
         val_ds, batch_size=batch_size,
         shuffle=False, sampler=val_sampler,
         collate_fn=_collate_fn, num_workers=4, pin_memory=is_cuda,
+        persistent_workers=True,
     )
     return train_dataloader, val_dataloader
 
