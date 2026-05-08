@@ -1,13 +1,20 @@
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-NUMBER_OF_LAYERS = 2
-DIM_MODEL = 256
-DIM_FEEDFORWARD = 512
-NUMBER_OF_ATTENTION_HEAD = 4
-DROP_OUT = 0.1
+# NUMBER_OF_LAYERS = 2
+# DIM_MODEL = 256
+# DIM_FEEDFORWARD = 512
+# NUMBER_OF_ATTENTION_HEAD = 4
+# DROP_OUT = 0.1
 
-DATASET_NAME = "bentrevett/multi30k"
+# Original Model
+NUMBER_OF_LAYERS = 6
+DIM_MODEL = 512
+DIM_FEEDFORWARD = 2048
+NUMBER_OF_ATTENTION_HEAD = 8
+
+# DATASET_NAME = "bentrevett/multi30k"
+DATASET_NAME = "wmt14"
 SRC_LANGUAGE = "de"
 TGT_LANGUAGE = "en"
 
