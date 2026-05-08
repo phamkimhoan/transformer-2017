@@ -37,5 +37,5 @@ class TrainConfig:
     directory: Optional[str] = None
     resume_from: Optional[str] = None
     distributed: bool = False
-    mode: Literal["train", "eval"] = "train"
+    mode: Literal["preprocess", "train", "eval"] = "train"
     label_smoothing: float = 0.1

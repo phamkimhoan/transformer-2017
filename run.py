@@ -16,7 +16,7 @@ from utils import (
     LabelSmoothing, SimpleLossCompute,
     DummyOptimizer, DummyScheduler,
     find_checkpoint, save_checkpoint,
-    create_dataloaders, load_dataset,
+    create_dataloaders, pretokenize_and_cache, load_dataset,
     load_tokenizers, load_vocab,
     tokenize, detokenize, greedy_decode,
 )
@@ -183,6 +183,19 @@ def train_worker(
                 )
 
 
+def preprocess_model(vocab_src, spacy_src, spacy_tgt, config: TrainConfig):
+    """Build vocab and pre-tokenize dataset. Run locally; transfer outputs to training machine."""
+    directory = config.directory or os.path.dirname(os.path.abspath(__file__))
+    pretokenize_and_cache(
+        vocab_src, spacy_src, spacy_tgt,
+        directory=directory, max_padding=config.max_padding,
+    )
+    vocab_path = os.path.join(directory, "vocab.pt")
+    cache_path = os.path.join(directory, "dataset_cache.pt")
+    print(f"\nPreprocessing complete. Transfer these two files to the training machine:")
+    print(f"  scp {vocab_path} {cache_path} root@<host>:/workspace/transformer-2017/")
+
+
 def train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
     device_type = get_device()
     print(f'Using device: {device_type}')
@@ -196,6 +209,12 @@ def train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig)
               f'will run {config.num_epochs} more epoch(s).')
     else:
         print('No checkpoint found — starting fresh.')
+
+    # Build cache if not already present (fallback for machines without preprocessed data)
+    pretokenize_and_cache(
+        vocab_src, spacy_src, spacy_tgt,
+        directory=config.directory, max_padding=config.max_padding,
+    )
 
     if config.distributed and device_type == "cuda":
         ngpus = torch.cuda.device_count()
@@ -284,7 +303,7 @@ def parse_args() -> TrainConfig:
     p.add_argument("--resume-from",       type=str,   default=None)
     p.add_argument("--distributed",       action="store_true", default=defaults.distributed)
     p.add_argument("--mode",              type=str,   default=defaults.mode,
-                   choices=["train", "eval"])
+                   choices=["preprocess", "train", "eval"])
     p.add_argument("--label-smoothing",   type=float, default=defaults.label_smoothing)
     a = p.parse_args()
     return TrainConfig(
@@ -308,7 +327,9 @@ if __name__ == "__main__":
     config = parse_args()
     spacy_src, spacy_tgt = load_tokenizers()
     vocab_src, vocab_tgt = load_vocab(spacy_src, spacy_tgt, directory=config.directory)
-    if config.mode == "train":
+    if config.mode == "preprocess":
+        preprocess_model(vocab_src, spacy_src, spacy_tgt, config)
+    elif config.mode == "train":
         train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config)
     else:
         eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config)

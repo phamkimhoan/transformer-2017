@@ -1,4 +1,5 @@
 import collections
+import multiprocessing
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -377,15 +378,37 @@ def load_vocab(
 
 
 class _PreTokenizedDataset(Dataset):
-    """Wraps pre-tokenized (src_ids, tgt_ids) pairs — no tokenization at batch time."""
-    def __init__(self, pairs):
-        self._pairs = pairs  # list of (src_list, tgt_list)
+    """Wraps pre-tokenized src/tgt tensors (N, max_padding) — index returns a row pair."""
+    def __init__(self, src: torch.Tensor, tgt: torch.Tensor):
+        self._src = src
+        self._tgt = tgt
 
     def __len__(self):
-        return len(self._pairs)
+        return self._src.size(0)
 
     def __getitem__(self, idx):
-        return self._pairs[idx]
+        return self._src[idx], self._tgt[idx]
+
+
+def _tokenize_chunk(args):
+    """Worker function for parallel tokenization — must be module-level for pickling."""
+    texts, model_name = args
+    import spacy
+    nlp = spacy.load(model_name, disable=["parser", "ner", "tagger"])
+    return [[tok.text for tok in doc]
+            for doc in nlp.tokenizer.pipe(texts, batch_size=4096)]
+
+
+def _tokenize_parallel(texts, model_name, desc):
+    n_workers = min(multiprocessing.cpu_count(), 8)
+    chunk_size = (len(texts) + n_workers - 1) // n_workers
+    chunks = [(texts[i:i + chunk_size], model_name)
+              for i in range(0, len(texts), chunk_size)]
+    print(f"{desc}: {len(texts):,} texts across {n_workers} workers", flush=True)
+    with multiprocessing.Pool(n_workers) as pool:
+        results = list(tqdm(pool.imap(_tokenize_chunk, chunks),
+                            total=len(chunks), desc=desc, dynamic_ncols=True))
+    return [token_list for chunk in results for token_list in chunk]
 
 
 def pretokenize_and_cache(
@@ -396,10 +419,11 @@ def pretokenize_and_cache(
     max_padding=128,
     dataset_config=DATASET_CONFIG,
 ):
-    """Tokenize train+val splits once and cache to disk as integer ID lists.
+    """Tokenize train+val splits once using parallel CPU workers, cache to disk.
 
     Subsequent calls load from cache instantly. Cache is invalidated when
-    vocab size or max_padding changes.
+    vocab size or max_padding changes. Safe to call before DDP mp.spawn —
+    workers will always find the cache ready.
     """
     if directory is None:
         directory = os.path.dirname(os.path.abspath(__file__))
@@ -408,43 +432,51 @@ def pretokenize_and_cache(
                    "dataset_config": dataset_config}
 
     if os.path.exists(cache_path):
-        saved = torch.load(cache_path, weights_only=False)
+        saved = torch.load(cache_path, weights_only=True)
         if saved.get("fingerprint") == fingerprint:
             print(f"Loaded pre-tokenized dataset from {cache_path}")
-            return saved["train"], saved["val"]
+            return (saved["train_src"], saved["train_tgt"]), (saved["val_src"], saved["val_tgt"])
         print("Dataset cache outdated — rebuilding...")
         os.remove(cache_path)
 
     print("Pre-tokenizing dataset (runs once, cached afterwards)...")
     train_raw, val_raw, _ = load_dataset(dataset_config=dataset_config)
 
-    bos = vocab["<s>"]
-    eos = vocab["</s>"]
+    bos    = vocab["<s>"]
+    eos    = vocab["</s>"]
     pad_id = vocab["<blank>"]
+    src_model = spacy_src.meta["name"]
+    tgt_model = spacy_tgt.meta["name"]
 
-    def encode_split(pairs, desc):
+    def encode_split(pairs, label):
         src_texts = [p[0] for p in pairs]
         tgt_texts = [p[1] for p in pairs]
-        result = []
-        src_docs = list(tqdm(spacy_src.tokenizer.pipe(src_texts, batch_size=4096),
-                             total=len(src_texts), desc=f"{desc} src", dynamic_ncols=True))
-        tgt_docs = list(tqdm(spacy_tgt.tokenizer.pipe(tgt_texts, batch_size=4096),
-                             total=len(tgt_texts), desc=f"{desc} tgt", dynamic_ncols=True))
-        for src_doc, tgt_doc in zip(src_docs, tgt_docs):
-            src_ids = [bos] + vocab([t.text for t in src_doc]) + [eos]
-            tgt_ids = [bos] + vocab([t.text for t in tgt_doc]) + [eos]
+        src_token_lists = _tokenize_parallel(src_texts, src_model, f"{label} src")
+        tgt_token_lists = _tokenize_parallel(tgt_texts, tgt_model, f"{label} tgt")
+        n = len(pairs)
+        src_t = torch.full((n, max_padding), pad_id, dtype=torch.int32)
+        tgt_t = torch.full((n, max_padding), pad_id, dtype=torch.int32)
+        for i, (src_tokens, tgt_tokens) in enumerate(zip(src_token_lists, tgt_token_lists)):
+            src_ids = [bos] + vocab(src_tokens) + [eos]
+            tgt_ids = [bos] + vocab(tgt_tokens) + [eos]
             if len(src_ids) > max_padding:
                 src_ids = src_ids[:max_padding - 1] + [eos]
             if len(tgt_ids) > max_padding:
                 tgt_ids = tgt_ids[:max_padding - 1] + [eos]
-            result.append((src_ids, tgt_ids))
-        return result
+            src_t[i, :len(src_ids)] = torch.tensor(src_ids, dtype=torch.int32)
+            tgt_t[i, :len(tgt_ids)] = torch.tensor(tgt_ids, dtype=torch.int32)
+        return src_t, tgt_t
 
-    train_pairs = encode_split(train_raw, "Train")
-    val_pairs   = encode_split(val_raw,   "Val  ")
-    torch.save({"train": train_pairs, "val": val_pairs, "fingerprint": fingerprint}, cache_path)
-    print(f"Saved pre-tokenized dataset to {cache_path}")
-    return train_pairs, val_pairs
+    train_src, train_tgt = encode_split(train_raw, "Train")
+    val_src,   val_tgt   = encode_split(val_raw,   "Val  ")
+    torch.save({
+        "train_src": train_src, "train_tgt": train_tgt,
+        "val_src":   val_src,   "val_tgt":   val_tgt,
+        "fingerprint": fingerprint,
+    }, cache_path)
+    size_gb = os.path.getsize(cache_path) / 1e9
+    print(f"Saved pre-tokenized dataset to {cache_path}  ({size_gb:.1f} GB)")
+    return (train_src, train_tgt), (val_src, val_tgt)
 
 
 def create_dataloaders(
@@ -458,25 +490,20 @@ def create_dataloaders(
     directory=None,
     dataset_config=DATASET_CONFIG,
 ):
-    train_pairs, val_pairs = pretokenize_and_cache(
+    (train_src, train_tgt), (val_src, val_tgt) = pretokenize_and_cache(
         vocab, spacy_src, spacy_tgt,
         directory=directory, max_padding=max_padding, dataset_config=dataset_config,
     )
 
-    pad_id = vocab["<blank>"]
-
+    # Tensors are already padded — collate just stacks rows and casts to long
     def collate_fn(batch):
-        # Returns CPU tensors — caller moves to device. Required for num_workers > 0.
-        src_batch = torch.zeros(len(batch), max_padding, dtype=torch.long).fill_(pad_id)
-        tgt_batch = torch.zeros(len(batch), max_padding, dtype=torch.long).fill_(pad_id)
-        for i, (src_ids, tgt_ids) in enumerate(batch):
-            src_batch[i, :len(src_ids)] = torch.tensor(src_ids, dtype=torch.long)
-            tgt_batch[i, :len(tgt_ids)] = torch.tensor(tgt_ids, dtype=torch.long)
-        return src_batch, tgt_batch
+        src = torch.stack([s for s, _ in batch]).long()
+        tgt = torch.stack([t for _, t in batch]).long()
+        return src, tgt
 
     is_cuda = device.type == "cuda"
-    train_ds = _PreTokenizedDataset(train_pairs)
-    val_ds   = _PreTokenizedDataset(val_pairs)
+    train_ds = _PreTokenizedDataset(train_src, train_tgt)
+    val_ds   = _PreTokenizedDataset(val_src,   val_tgt)
     train_sampler = DistributedSampler(train_ds) if is_distributed else None
     val_sampler   = DistributedSampler(val_ds)   if is_distributed else None
 

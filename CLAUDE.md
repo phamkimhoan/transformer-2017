@@ -18,9 +18,18 @@ Spacy models are downloaded automatically by `load_tokenizers()` on first run.
 ## Running
 
 ```bash
-python run.py                          # train with TrainConfig defaults
-python run.py --num-epochs 10          # override any field via CLI
-python run.py --mode eval --resume-from small_transformer_multi30k_de_en_
+# Step 1 — preprocess locally (builds vocab.pt + dataset_cache.pt, CPU only)
+python run.py --mode preprocess
+
+# Step 2 — transfer to training machine
+scp vocab.pt dataset_cache.pt root@<host>:/workspace/transformer-2017/
+
+# Step 3 — train on GPU machine (loads cache, no tokenization)
+python run.py --mode train --num-epochs 10 --distributed
+
+# Evaluate BLEU on test set
+python run.py --mode eval --resume-from wmt14_full_
+
 python run.py --help                   # list all flags
 ```
 
