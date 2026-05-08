@@ -52,12 +52,13 @@ Four files comprise the entire codebase:
 - `LabelSmoothing` — KLDivLoss with label smoothing
 - `save_checkpoint(ckpt_dict, directory, prefix)` — saves as `{prefix}epoch{N:03d}.pt`
 - `find_checkpoint(path)` — accepts exact path or prefix; globs for `{prefix}epoch*.pt` and returns the latest
-- `greedy_decode(model, src, src_mask, max_len, start_symbol)` — token-by-token greedy inference
+- `detokenize(tokens)` — reverses spacy tokenization (reattaches punctuation, fixes contractions) for human-readable output and correct sacrebleu scoring
+- `greedy_decode(model, src, src_mask, max_len, start_symbol, eos_symbol)` — batched greedy inference; supports batch > 1 and exits early once all sequences emit `eos_symbol`
 
 **`run.py`** — Entry point:
 - `parse_args()` — builds argparse from `TrainConfig` defaults; every field is a `--kebab-case` flag
 - `train_model` / `train_worker` — handles device setup (CUDA/MPS/CPU), DDP for multi-GPU CUDA, checkpoint resume, epoch loop
-- `eval_model` — loads checkpoint, runs greedy decode on test set, reports sacrebleu BLEU score
+- `eval_model` — loads checkpoint, runs batched greedy decode (batch size from `config.batch_size`) on test set, detokenizes hypotheses, reports sacrebleu BLEU score
 - `__main__` calls `parse_args()` then dispatches on `config.mode`
 
 ## Key Design Decisions
@@ -76,3 +77,41 @@ Four files comprise the entire codebase:
 - **Subprocesses**: always `subprocess.run([sys.executable, ...], check=True)`, never `os.system`.
 - **Logging vs print**: use `logging.info` inside library/model code; `print` is acceptable only in `run.py`.
 - **Package management**: use `uv pip install`, not `pip install`.
+
+## Remote Training (vast.ai)
+
+Typical workflow for cloud GPU training:
+
+```bash
+# On the remote machine — start a persistent tmux session before launching training
+tmux new -s train
+cd /workspace/transformer-2017
+/workspace/.venv/bin/python run.py --num-epochs 20 --file-prefix my_run_ 2>&1 | tee /workspace/train.log
+
+# Detach without killing: Ctrl-B then D
+# Reattach later: tmux attach -t train
+# Kill session when done: tmux kill-session -t train
+```
+
+Monitor from a second terminal:
+
+```bash
+# GPU + CPU utilisation
+watch -n 2 "nvidia-smi && echo '---' && free -h"
+
+# Training log
+tail -f /workspace/train.log
+```
+
+**Known compatibility issues:**
+
+- **Python 3.14**: `datasets` library's `dill` pickling is broken on Python 3.14. Use Python 3.11 or 3.12.
+- **NVIDIA Blackwell GPUs (RTX 5060 Ti, sm_120)**: PyTorch stable (≤2.5) does not support sm_120. Install PyTorch nightly with CUDA 12.8:
+  ```bash
+  uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+  ```
+- **PyTorch 2.6+ `torch.load`**: default changed to `weights_only=True`, which blocks unpickling `TrainState` and `TrainConfig`. All `torch.load` calls in `run.py` use `weights_only=False` explicitly.
+
+**Checkpoint resume on remote:** `--resume-from` defaults to `--file-prefix` in `parse_args()`. When restarting a run, pass the same `--file-prefix` and omit `--resume-from` — `find_checkpoint` will glob for the latest `epoch*.pt` automatically.
+
+**`.venv` location:** The virtual environment should be created inside the repo directory (`/workspace/transformer-2017/.venv`). Activate with `source .venv/bin/activate` or invoke directly as `.venv/bin/python run.py ...`.

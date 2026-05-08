@@ -18,7 +18,7 @@ from utils import (
     find_checkpoint, save_checkpoint,
     create_dataloaders, load_dataset,
     load_tokenizers, load_vocab,
-    tokenize, greedy_decode,
+    tokenize, detokenize, greedy_decode,
 )
 
 
@@ -232,22 +232,36 @@ def eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
     eos_idx = vocab_src["</s>"]
     blank_idx = vocab_src["<blank>"]
 
+    def encode_src(text):
+        tokens = [bos_idx] + vocab_src(tokenize(text, spacy_src)) + [eos_idx]
+        if len(tokens) > config.max_padding:
+            tokens = tokens[:config.max_padding - 1] + [eos_idx]
+        return tokens
+
+    from tqdm import tqdm
     hypotheses, references = [], []
+    batches = [test_data[i:i + config.batch_size] for i in range(0, len(test_data), config.batch_size)]
     with torch.no_grad():
-        for src_text, tgt_text in test_data:
-            src_tokens = [bos_idx] + vocab_src(tokenize(src_text, spacy_src)) + [eos_idx]
-            src = torch.tensor(src_tokens, dtype=torch.long, device=device).unsqueeze(0)
+        for batch in tqdm(batches, desc="Evaluating", dynamic_ncols=True):
+            src_texts = [pair[0] for pair in batch]
+            ref_texts  = [pair[1] for pair in batch]
+            encoded = [encode_src(t) for t in src_texts]
+            max_src_len = max(len(e) for e in encoded)
+            padded = [e + [blank_idx] * (max_src_len - len(e)) for e in encoded]
+            src = torch.tensor(padded, dtype=torch.long, device=device)
             src_mask = (src != blank_idx).unsqueeze(-2)
-            out = greedy_decode(model, src, src_mask, max_len=config.max_padding, start_symbol=bos_idx)
-            tokens = []
-            for i in out[0].tolist():
-                if i == bos_idx:
-                    continue
-                if i == eos_idx:
-                    break
-                tokens.append(itos[i])
-            hypotheses.append(" ".join(tokens))
-            references.append(tgt_text)
+            out = greedy_decode(model, src, src_mask, max_len=config.max_padding,
+                                start_symbol=bos_idx, eos_symbol=eos_idx)
+            for seq, ref_text in zip(out.tolist(), ref_texts):
+                tokens = []
+                for tok_id in seq:
+                    if tok_id == bos_idx:
+                        continue
+                    if tok_id == eos_idx:
+                        break
+                    tokens.append(itos[tok_id])
+                hypotheses.append(detokenize(tokens))
+                references.append(ref_text)
 
     result = sacrebleu.corpus_bleu(hypotheses, [references])
     print(f"BLEU: {result.score:.2f}")

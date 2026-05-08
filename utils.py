@@ -266,6 +266,15 @@ def tokenize(text, tokenizer):
     return [tok.text for tok in tokenizer.tokenizer(text)]
 
 
+def detokenize(tokens):
+    import re
+    text = " ".join(tokens)
+    text = re.sub(r" ([.,!?;:\)])", r"\1", text)
+    text = re.sub(r"([\(]) ", r"\1", text)
+    text = re.sub(r" '(s|t|re|ve|ll|d|m)\b", r"'\1", text)
+    return text
+
+
 def yield_tokens(data_iter, tokenizer, index):
     for from_to_tuple in data_iter:
         yield tokenizer(from_to_tuple[index])
@@ -484,17 +493,19 @@ def save_checkpoint(ckpt_dict, directory=None, prefix="model_"):
     return path
 
 
-def greedy_decode(model, src, src_mask, max_len, start_symbol):
+def greedy_decode(model, src, src_mask, max_len, start_symbol, eos_symbol=None):
+    batch_size = src.size(0)
     memory = model.encode(src, src_mask)
-    ys = torch.full((1, 1), start_symbol, dtype=src.dtype, device=src.device)
-    for i in range(max_len - 1):
+    ys = torch.full((batch_size, 1), start_symbol, dtype=src.dtype, device=src.device)
+    done = torch.zeros(batch_size, dtype=torch.bool, device=src.device)
+    for _ in range(max_len - 1):
         out = model.decode(
             memory, src_mask, ys, subsequent_mask(ys.size(1)).to(src.device)
         )
-        prob = model.generator(out[:, -1])
-        _, next_word = torch.max(prob, dim=1)
-        next_word = next_word.item()
-        ys = torch.cat(
-            [ys, torch.full((1, 1), next_word, dtype=src.dtype, device=src.device)], dim=1
-        )
+        _, next_word = torch.max(model.generator(out[:, -1]), dim=1)
+        ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1)
+        if eos_symbol is not None:
+            done |= (next_word == eos_symbol)
+            if done.all():
+                break
     return ys
