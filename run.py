@@ -222,6 +222,8 @@ def train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig)
         ngpus = torch.cuda.device_count()
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12356'
+        os.environ.setdefault('NCCL_P2P_DISABLE', '1')
+        os.environ.setdefault('NCCL_IB_DISABLE', '1')
         print(f'Spawning {ngpus} GPU process(es) ...')
         mp.spawn(
             train_worker, nprocs=ngpus,
