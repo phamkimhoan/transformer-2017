@@ -95,7 +95,7 @@ class Batch:
             self.tgt = tgt[:, :-1]
             self.tgt_y = tgt[:, 1:]
             self.tgt_mask = self.make_std_mask(self.tgt, pad)
-            self.ntokens = (self.tgt_y != pad).data.sum()
+            self.ntokens = int((self.tgt_y != pad).data.sum())
 
     @staticmethod
     def make_std_mask(tgt, pad):

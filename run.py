@@ -116,6 +116,8 @@ def train_worker(
             optimizer.load_state_dict(ckpt['optimizer'])
             lr_scheduler.load_state_dict(ckpt['lr_scheduler'])
             train_state = ckpt['train_state']
+            if scaler is not None and 'scaler' in ckpt and ckpt['scaler'] is not None:
+                scaler.load_state_dict(ckpt['scaler'])
             print(f'[{device}] Resumed at epoch {start_epoch} (steps so far: {train_state.step})', flush=True)
         else:
             print(f'[{device}] Weights-only checkpoint loaded — starting at epoch {start_epoch}', flush=True)
@@ -177,6 +179,7 @@ def train_worker(
                         'optimizer': optimizer.state_dict(),
                         'lr_scheduler': lr_scheduler.state_dict(),
                         'train_state': train_state,
+                        'scaler': scaler.state_dict() if scaler is not None else None,
                         'config': config,
                         'loss_history': loss_history,
                     },
@@ -320,7 +323,7 @@ def parse_args() -> TrainConfig:
         checkpoint_every=a.checkpoint_every,
         file_prefix=a.file_prefix,
         directory=a.directory,
-        resume_from=a.resume_from if a.resume_from is not None else a.file_prefix,
+        resume_from=a.resume_from if a.resume_from is not None else (a.file_prefix if a.mode != 'eval' else None),
         distributed=a.distributed,
         mode=a.mode,
         label_smoothing=a.label_smoothing,
