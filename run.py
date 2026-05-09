@@ -74,8 +74,11 @@ def train_worker(
     is_main_process = True
 
     if is_distributed and device_type == "cuda":
+        # gloo works on all GPU architectures including Blackwell (sm_120)
+        # where NCCL 2.21.5 fails with 'invalid argument'
+        backend = 'nccl' if os.environ.get('USE_NCCL') else 'gloo'
         dist.init_process_group(
-            'nccl', init_method='env://', rank=gpu, world_size=ngpus_per_node
+            backend, init_method='env://', rank=gpu, world_size=ngpus_per_node
         )
         model = DDP(model, device_ids=[gpu])
         module = model.module
