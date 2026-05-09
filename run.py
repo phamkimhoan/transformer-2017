@@ -238,9 +238,9 @@ def train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig)
         )
 
 
-def eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
+def test_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
     """Load a checkpoint and evaluate on the test set, reporting BLEU score."""
-    assert config.resume_from is not None, "eval mode requires resume_from to be set in TrainConfig"
+    assert config.resume_from is not None, "test mode requires --resume-from to be set"
 
     device = torch.device(get_device())
     ckpt_path = find_checkpoint(config.resume_from)
@@ -297,7 +297,7 @@ def eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
 
 def parse_args() -> TrainConfig:
     defaults = TrainConfig()
-    p = argparse.ArgumentParser(description="Train/eval the 2017 Transformer (de→en)")
+    p = argparse.ArgumentParser(description="Train/test the 2017 Transformer (de→en)")
     p.add_argument("--batch-size",        type=int,   default=defaults.batch_size)
     p.add_argument("--max-padding",       type=int,   default=defaults.max_padding)
     p.add_argument("--base-lr",           type=float, default=defaults.base_lr)
@@ -310,7 +310,7 @@ def parse_args() -> TrainConfig:
     p.add_argument("--resume-from",       type=str,   default=None)
     p.add_argument("--distributed",       action="store_true", default=defaults.distributed)
     p.add_argument("--mode",              type=str,   default=defaults.mode,
-                   choices=["preprocess", "train", "eval"])
+                   choices=["preprocess", "train", "test"])
     p.add_argument("--label-smoothing",   type=float, default=defaults.label_smoothing)
     a = p.parse_args()
     return TrainConfig(
@@ -323,7 +323,7 @@ def parse_args() -> TrainConfig:
         checkpoint_every=a.checkpoint_every,
         file_prefix=a.file_prefix,
         directory=a.directory,
-        resume_from=a.resume_from if a.resume_from is not None else (a.file_prefix if a.mode != 'eval' else None),
+        resume_from=a.resume_from if a.resume_from is not None else (a.file_prefix if a.mode != 'test' else None),
         distributed=a.distributed,
         mode=a.mode,
         label_smoothing=a.label_smoothing,
@@ -339,4 +339,4 @@ if __name__ == "__main__":
     elif config.mode == "train":
         train_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config)
     else:
-        eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config)
+        test_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config)

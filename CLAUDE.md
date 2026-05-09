@@ -28,7 +28,7 @@ scp vocab.pt dataset_cache.pt root@<host>:/workspace/transformer-2017/
 python run.py --mode train --num-epochs 10 --distributed
 
 # Evaluate BLEU on test set
-python run.py --mode eval --resume-from wmt14_full_
+python run.py --mode test --resume-from wmt14_full_
 
 python run.py --help                   # list all flags
 ```
@@ -67,7 +67,7 @@ Four files comprise the entire codebase:
 **`run.py`** — Entry point:
 - `parse_args()` — builds argparse from `TrainConfig` defaults; every field is a `--kebab-case` flag
 - `train_model` / `train_worker` — handles device setup (CUDA/MPS/CPU), DDP for multi-GPU CUDA, checkpoint resume, epoch loop
-- `eval_model` — loads checkpoint, runs batched greedy decode (batch size from `config.batch_size`) on test set, detokenizes hypotheses, reports sacrebleu BLEU score
+- `test_model` — loads checkpoint, runs batched greedy decode (batch size from `config.batch_size`) on the **test set**, detokenizes hypotheses, reports sacrebleu BLEU score. Val set is only used during training.
 - `__main__` calls `parse_args()` then dispatches on `config.mode`
 
 ## Key Design Decisions
@@ -95,7 +95,7 @@ Typical workflow for cloud GPU training:
 # On the remote machine — start a persistent tmux session before launching training
 tmux new -s train
 cd /workspace/transformer-2017
-/workspace/.venv/bin/python run.py --num-epochs 20 --file-prefix my_run_ 2>&1 | tee /workspace/train.log
+python run.py --num-epochs 20 --file-prefix my_run_ 2>&1 | tee /workspace/train.log
 
 # Detach without killing: Ctrl-B then D
 # Reattach later: tmux attach -t train
