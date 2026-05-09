@@ -245,7 +245,7 @@ def eval_model(vocab_src, vocab_tgt, spacy_src, spacy_tgt, config: TrainConfig):
 
     model = make_model(len(vocab_src), len(vocab_tgt))
     model.to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt.get("model", ckpt))
     model.eval()
     print(f"Loaded model from {ckpt_path} (epoch {ckpt.get('epoch', '?')})")
